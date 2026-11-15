@@ -114,7 +114,10 @@ defmodule JalaliX do
 
   `opts` may contain `timezone:` to set the active zone (map or keyword list).
   """
-  @spec create(integer() | float() | String.t() | Date.t() | DateTime.t() | NaiveDateTime.t() | t(), map() | keyword()) ::
+  @spec create(
+          integer() | float() | String.t() | Date.t() | DateTime.t() | NaiveDateTime.t() | t(),
+          map() | keyword()
+        ) ::
           t()
   def create(date, opts \\ %{}) do
     ms = parse_input(date)
@@ -636,8 +639,12 @@ defmodule JalaliX do
     lowered = String.downcase(trimmed)
 
     cond do
-      lowered in ["default", "local", "system"] -> host_local_iana()
-      lowered in ["utc", "gmt"] -> "UTC"
+      lowered in ["default", "local", "system"] ->
+        host_local_iana()
+
+      lowered in ["utc", "gmt"] ->
+        "UTC"
+
       true ->
         _ = offset_ms!(trimmed)
         trimmed
@@ -749,7 +756,7 @@ defmodule JalaliX do
     jalali =
       cond do
         diff_days > 0 -> Enum.reduce(1..diff_days, @base_jalali, fn _, acc -> step_forward(acc) end)
-        diff_days < 0 -> Enum.reduce(1..(-diff_days), @base_jalali, fn _, acc -> step_backward(acc) end)
+        diff_days < 0 -> Enum.reduce(1..-diff_days, @base_jalali, fn _, acc -> step_backward(acc) end)
         true -> @base_jalali
       end
 
