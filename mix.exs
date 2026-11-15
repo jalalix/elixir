@@ -34,7 +34,7 @@ defmodule Jalalix.MixProject do
   end
 
   defp description do
-    "Jalali (Persian/Shamsi) calendar. Part of JalaliX — same API and outputs across languages. https://jalalix.com"
+    "Jalali (Persian/Shamsi) calendar. Part of JalaliX - same API and outputs across languages. https://jalalix.com"
   end
 
   defp package do
@@ -44,7 +44,8 @@ defmodule Jalalix.MixProject do
       links: %{
         "GitHub" => @source_url,
         "Website" => "https://jalalix.com",
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
+        "Open Collective" => "https://opencollective.com/jalalix"
       },
       files: ~w(lib mix.exs README.md CHANGELOG.md LICENSE)
     ]
@@ -53,7 +54,11 @@ defmodule Jalalix.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md", "CHANGELOG.md"]
+      extras: [
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE": [title: "License"]
+      ]
     ]
   end
 end

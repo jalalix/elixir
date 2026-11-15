@@ -44,6 +44,10 @@ defmodule JalaliX do
   @first_day_of_week 6
 
   @persian_numbers ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"]
+  @arabic_numbers ["٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩"]
+
+  @normalize_query_date_regex ~r/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?(?:Z|[+-]\d{2}:?\d{2})?)?/
+  @fractional_seconds_regex ~r/(\d{2}:\d{2}:\d{2})\.\d+/
 
   @week_days_names ["شنبه", "یکشنبه", "دوشنبه", "سه شنبه", "چهار شنبه", "پنج شنبه", "جمعه"]
   @week_days_letters ["ش", "ی", "د", "س", "چ", "پ", "ج"]
@@ -143,7 +147,8 @@ defmodule JalaliX do
       |> fromPersian()
       |> String.trim()
 
-    regex = ~r/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/
+    regex =
+      ~r/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/
 
     case Regex.run(regex, normalized) do
       nil ->
@@ -184,13 +189,60 @@ defmodule JalaliX do
     end)
   end
 
-  @doc "Converts Persian numerals (۰-۹) to Western numerals (0-9) in a string."
+  @doc "Converts Persian (۰-۹) and Arabic-Indic (٠-٩) numerals to Western numerals (0-9) in a string."
   @spec fromPersian(String.t()) :: String.t()
   def fromPersian(s) do
-    Enum.reduce(0..9, s, fn i, acc ->
-      String.replace(acc, Enum.at(@persian_numbers, i), Integer.to_string(i))
+    after_persian =
+      Enum.reduce(0..9, s, fn i, acc ->
+        String.replace(acc, Enum.at(@persian_numbers, i), Integer.to_string(i))
+      end)
+
+    Enum.reduce(0..9, after_persian, fn i, acc ->
+      String.replace(acc, Enum.at(@arabic_numbers, i), Integer.to_string(i))
     end)
   end
+
+  @doc """
+  Soft-normalizes loose query / form date inputs into a Gregorian `YYYY-MM-DD HH:mm:ss` string.
+
+  Handles empty/sentinel values (`nil`, `"undefined"`, `"Invalid Date"`, `"NaN"`), unix timestamps
+  (seconds or milliseconds), Persian/Arabic digits, `/` `-` `.` separators, fractional seconds,
+  optional `Z` / offset suffixes, and auto-detects Jalali vs Gregorian by year band: years in
+  `jalaliYearMin..jalaliYearMax` (default `1..1899`) are treated as Jalali when the civil date is
+  valid; otherwise Gregorian.
+
+  Invalid or unrecognized values are returned cleaned (digits normalized) rather than raising;
+  sentinels and non-positive timestamps return `nil`. Non-string / non-numeric values pass through.
+  """
+  @spec normalizeQueryDate(any(), map() | keyword()) :: any()
+  def normalizeQueryDate(value, opts \\ %{})
+
+  def normalizeQueryDate(nil, _opts), do: nil
+
+  def normalizeQueryDate(value, opts) when is_integer(value) or is_float(value) do
+    normalize_query_timestamp(trunc(value), opts)
+  end
+
+  def normalizeQueryDate(value, opts) when is_binary(value) do
+    cond do
+      value in ["null", "", "undefined"] ->
+        nil
+
+      String.downcase(value) == "invalid date" ->
+        nil
+
+      Regex.match?(~r/NaN/i, value) ->
+        nil
+
+      true ->
+        case parse_numeric(String.trim(value)) do
+          {:ok, num} -> normalize_query_timestamp(num, opts)
+          :error -> normalize_query_date_string(value, opts)
+        end
+    end
+  end
+
+  def normalizeQueryDate(value, _opts), do: value
 
   @doc "Returns true if `a` is before `b`."
   @spec compare(t(), t()) :: boolean()
@@ -334,7 +386,10 @@ defmodule JalaliX do
   @spec setMilliseconds(t(), number()) :: t()
   def setMilliseconds(%__MODULE__{} = j, ms) do
     parts = local_parts(j)
-    new_ms = wall_to_utc(parts.epoch_day, parts.hour, parts.minute, parts.second, trunc(ms), j.timezone)
+
+    new_ms =
+      wall_to_utc(parts.epoch_day, parts.hour, parts.minute, parts.second, trunc(ms), j.timezone)
+
     %{j | ms: new_ms}
   end
 
@@ -563,6 +618,111 @@ defmodule JalaliX do
     end
   end
 
+  defp parse_numeric(s) do
+    case Integer.parse(s) do
+      {int_val, ""} ->
+        {:ok, int_val}
+
+      _ ->
+        case Float.parse(s) do
+          {float_val, ""} -> {:ok, trunc(float_val)}
+          _ -> :error
+        end
+    end
+  end
+
+  defp normalize_query_timestamp(timestamp, opts) do
+    ts = if timestamp > 9_999_999_999, do: div(timestamp, 1000), else: timestamp
+
+    if ts <= 0 do
+      nil
+    else
+      (ts * 1000)
+      |> create(opts)
+      |> format("YYYY-MM-DD HH:mm:ss", %{"calendar" => "gregorian"})
+    end
+  end
+
+  defp normalize_query_date_string(value, opts) do
+    digits =
+      value
+      |> fromPersian()
+      |> then(&Regex.replace(@fractional_seconds_regex, &1, "\\1"))
+
+    case Regex.run(@normalize_query_date_regex, digits) do
+      nil ->
+        digits
+
+      [_full, year_s, month_s, day_s | rest] ->
+        year = String.to_integer(year_s)
+        month = String.to_integer(month_s)
+        day = String.to_integer(day_s)
+        hour = group_int(rest, 0)
+        minute = group_int(rest, 1)
+        second = group_int(rest, 2)
+
+        jalali_year_min = opt_int(opts, :jalaliYearMin, "jalaliYearMin", 1)
+        jalali_year_max = opt_int(opts, :jalaliYearMax, "jalaliYearMax", 1899)
+
+        if year >= jalali_year_min and year <= jalali_year_max and
+             valid_jalali_civil_date?(year, month, day) do
+          try_parse_jalali_or_fallback(year, month, day, hour, minute, second, opts, digits)
+        else
+          gregorian_or_digits(year, month, day, hour, minute, second, digits)
+        end
+    end
+  end
+
+  defp try_parse_jalali_or_fallback(year, month, day, hour, minute, second, opts, digits) do
+    jalali_str =
+      "#{pad4(year)}/#{pad2(month)}/#{pad2(day)} #{pad2(hour)}:#{pad2(minute)}:#{pad2(second)}"
+
+    jalali_str
+    |> parseJalali(opts)
+    |> format("YYYY-MM-DD HH:mm:ss", %{"calendar" => "gregorian"})
+  rescue
+    ArgumentError -> gregorian_or_digits(year, month, day, hour, minute, second, digits)
+  end
+
+  defp gregorian_or_digits(year, month, day, hour, minute, second, digits) do
+    if valid_gregorian_date?(year, month, day) do
+      "#{pad4(year)}-#{pad2(month)}-#{pad2(day)} #{pad2(hour)}:#{pad2(minute)}:#{pad2(second)}"
+    else
+      digits
+    end
+  end
+
+  defp valid_jalali_civil_date?(year, month, day) do
+    cond do
+      year < 1 or month < 1 or month > 12 or day < 1 -> false
+      month <= 6 -> day <= 31
+      month <= 11 -> day <= 30
+      true -> day <= if(check_leap_year(year), do: 30, else: 29)
+    end
+  end
+
+  defp valid_gregorian_date?(year, month, day) do
+    case Date.new(year, month, day) do
+      {:ok, _} -> true
+      _ -> false
+    end
+  end
+
+  defp opt_int(opts, atom_key, _string_key, default) when is_list(opts) do
+    Keyword.get(opts, atom_key, default)
+  end
+
+  defp opt_int(opts, atom_key, string_key, default) when is_map(opts) do
+    case Map.get(opts, atom_key) || Map.get(opts, string_key) do
+      nil -> default
+      v -> v
+    end
+  end
+
+  defp opt_int(_opts, _atom_key, _string_key, default), do: default
+
+  defp pad4(n), do: String.pad_leading(Integer.to_string(n), 4, "0")
+
   defp parse_input(%__MODULE__{ms: ms}), do: ms
 
   defp parse_input(%Date{year: y, month: m, day: d}), do: days_from_civil(y, m, d) * @date_length
@@ -688,7 +848,16 @@ defmodule JalaliX do
     ms_part = rem3 - second * 1000
     {y, mo, da} = civil_from_days(day)
 
-    %{year: y, month: mo, day: da, hour: hour, minute: minute, second: second, ms: ms_part, epoch_day: day}
+    %{
+      year: y,
+      month: mo,
+      day: da,
+      hour: hour,
+      minute: minute,
+      second: second,
+      ms: ms_part,
+      epoch_day: day
+    }
   end
 
   defp js_day(%__MODULE__{} = j), do: Integer.mod(local_parts(j).epoch_day + 4, 7)
@@ -755,9 +924,14 @@ defmodule JalaliX do
   defp epoch_day_to_jalali(diff_days) do
     jalali =
       cond do
-        diff_days > 0 -> Enum.reduce(1..diff_days, @base_jalali, fn _, acc -> step_forward(acc) end)
-        diff_days < 0 -> Enum.reduce(1..-diff_days, @base_jalali, fn _, acc -> step_backward(acc) end)
-        true -> @base_jalali
+        diff_days > 0 ->
+          Enum.reduce(1..diff_days, @base_jalali, fn _, acc -> step_forward(acc) end)
+
+        diff_days < 0 ->
+          Enum.reduce(1..-diff_days, @base_jalali, fn _, acc -> step_backward(acc) end)
+
+        true ->
+          @base_jalali
       end
 
     Map.put(jalali, :is_leap_year, check_leap_year(jalali.year))
@@ -867,8 +1041,11 @@ defmodule JalaliX do
     Enum.at(@week_days_letters, Integer.mod(getDay(j) + @first_day_of_week, 7))
   end
 
-  defp get_gregorian_week_day_name(%__MODULE__{} = j), do: Enum.at(@week_days_gregorian_names, js_day(j))
-  defp get_gregorian_week_day_letter(%__MODULE__{} = j), do: Enum.at(@week_days_gregorian_letters, js_day(j))
+  defp get_gregorian_week_day_name(%__MODULE__{} = j),
+    do: Enum.at(@week_days_gregorian_names, js_day(j))
+
+  defp get_gregorian_week_day_letter(%__MODULE__{} = j),
+    do: Enum.at(@week_days_gregorian_letters, js_day(j))
 
   defp get_gregorian_meridiem(%__MODULE__{} = j) do
     if getHours(j) >= 12, do: @pm_gregorian, else: @am_gregorian
@@ -915,9 +1092,15 @@ defmodule JalaliX do
     day_of_year = if use_gregorian, do: get_gregorian_day_of_year(j), else: getDayOfYear(j)
     date_n = if use_gregorian, do: parts.day, else: getDate(j)
 
-    month_name = if use_gregorian, do: get_gregorian_month_name(month), else: get_jalali_month_name(month)
-    week_day_name = if use_gregorian, do: get_gregorian_week_day_name(j), else: get_week_day_name(j)
-    week_day_letter = if use_gregorian, do: get_gregorian_week_day_letter(j), else: get_week_day_letter(j)
+    month_name =
+      if use_gregorian, do: get_gregorian_month_name(month), else: get_jalali_month_name(month)
+
+    week_day_name =
+      if use_gregorian, do: get_gregorian_week_day_name(j), else: get_week_day_name(j)
+
+    week_day_letter =
+      if use_gregorian, do: get_gregorian_week_day_letter(j), else: get_week_day_letter(j)
+
     meridiem = if use_gregorian, do: get_gregorian_meridiem(j), else: getMeridiem(j)
 
     year_str = Integer.to_string(year)
@@ -989,7 +1172,7 @@ defmodule JalaliX do
   # unique, order-stable placeholder marker, remembering the real `value`
   # for each occurrence so it can be substituted back in at the very end
   # (this is what prevents a later, shorter token regex from re-matching
-  # text produced by an earlier, longer one — e.g. `MMM` vs `M`).
+  # text produced by an earlier, longer one - e.g. `MMM` vs `M`).
   defp apply_step({regex, value}, {output, placeholders}) do
     case Regex.scan(regex, output) do
       [] ->
