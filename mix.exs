@@ -1,7 +1,7 @@
 defmodule Jalalix.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/jalalix/elixir"
 
   def project do
@@ -57,7 +57,7 @@ defmodule Jalalix.MixProject do
       extras: [
         "README.md",
         "CHANGELOG.md",
-        "LICENSE": [title: "License"]
+        LICENSE: [title: "License"]
       ]
     ]
   end

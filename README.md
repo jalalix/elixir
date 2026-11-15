@@ -9,7 +9,7 @@ Jalali (Persian / Shamsi) calendar on top of a millisecond Unix timestamp. Pure 
 
 ```bash
 mix deps.get
-# or add to mix.exs: {:jalalix, "~> 0.1.0"}
+# or add to mix.exs: {:jalalix, "~> 0.2.0"}
 ```
 
 ```elixir
@@ -32,7 +32,7 @@ JalaliX.parseJalali("1403/12/07") |> JalaliX.toISODate()
 ```elixir
 # mix.exs
 defp deps do
-  [{:jalalix, "~> 0.1.0"}]
+  [{:jalalix, "~> 0.2.0"}]
 end
 ```
 
